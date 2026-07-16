@@ -13,6 +13,10 @@ from litefupzl.utils import normalize_cookie_string
 
 _ENV_FILE_CANDIDATES = (".env.local", ".env")
 DEFAULT_ONESHOT_DURATION_MINUTES = SESSION_DURATION_MINUTES
+DEFAULT_MONTHLY_TOPIC_TARGET = 500
+DEFAULT_SCHEDULE_RUNS_PER_DAY = 2
+DEFAULT_TOPIC_PREFETCH_PAGES = 7
+DEFAULT_TOPIC_PREFETCH_MAX_PAGES = 10
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -124,6 +128,26 @@ def load_oneshot_env() -> OneShotEnvConfig:
         "virtual_display": _load_bool("LITEFUPZL_VIRTUAL_DISPLAY", True, alias_keys=("FUCKPZL_ONESHOT_VIRTUAL_DISPLAY",)),
         "cookie_refresh_enabled": _cookie_refresh_enabled_from_env(),
         "mutual_like_users": _load_optional_json_array("LITEFUPZL_MUTUAL_LIKE_USERS_JSON"),
+        "monthly_topic_target": _load_int(
+            "LITEFUPZL_MONTHLY_TOPIC_TARGET",
+            DEFAULT_MONTHLY_TOPIC_TARGET,
+            alias_keys=("FUCKPZL_ONESHOT_MONTHLY_TOPIC_TARGET",),
+        ),
+        "schedule_runs_per_day": _load_int(
+            "LITEFUPZL_SCHEDULE_RUNS_PER_DAY",
+            DEFAULT_SCHEDULE_RUNS_PER_DAY,
+            alias_keys=("FUCKPZL_ONESHOT_SCHEDULE_RUNS_PER_DAY",),
+        ),
+        "topic_prefetch_pages": _load_int(
+            "LITEFUPZL_TOPIC_PREFETCH_PAGES",
+            DEFAULT_TOPIC_PREFETCH_PAGES,
+            alias_keys=("FUCKPZL_ONESHOT_TOPIC_PREFETCH_PAGES",),
+        ),
+        "topic_prefetch_max_pages": _load_int(
+            "LITEFUPZL_TOPIC_PREFETCH_MAX_PAGES",
+            DEFAULT_TOPIC_PREFETCH_MAX_PAGES,
+            alias_keys=("FUCKPZL_ONESHOT_TOPIC_PREFETCH_MAX_PAGES",),
+        ),
     }
     install_sensitive_output_guard()
     return OneShotEnvConfig.model_validate(config)

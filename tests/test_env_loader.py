@@ -17,6 +17,11 @@ def test_env_loader_requires_only_cookie_and_no_like_lottery(monkeypatch):
     assert config.cookies == ["_t=redacted"]
     assert config.duration_minutes == 40
     assert config.cookie_refresh_enabled is True
+    assert config.monthly_topic_target == 500
+    assert config.schedule_runs_per_day == 2
+    assert config.new_topic_target_per_run == 9
+    assert config.topic_prefetch_pages == 7
+    assert config.topic_prefetch_max_pages == 10
     assert not hasattr(config, "like_enabled")
     assert not hasattr(config, "lottery_enabled")
     assert not hasattr(config, "lottery_texts")
@@ -114,3 +119,30 @@ def test_mutual_like_users_malformed_json_skips_feature(monkeypatch):
     config = load_oneshot_env()
 
     assert config.mutual_like_users == []
+
+
+def test_new_topic_target_supports_overrides_and_legacy_aliases(monkeypatch):
+    from litefupzl.oneshot.env_loader import load_oneshot_env
+
+    monkeypatch.setenv("LITEFUPZL_COOKIES_JSON", json.dumps(["_t=redacted"]))
+    monkeypatch.setenv("LITEFUPZL_MONTHLY_TOPIC_TARGET", "720")
+    monkeypatch.setenv("FUCKPZL_ONESHOT_SCHEDULE_RUNS_PER_DAY", "3")
+    monkeypatch.setenv("LITEFUPZL_TOPIC_PREFETCH_PAGES", "8")
+    monkeypatch.setenv("FUCKPZL_ONESHOT_TOPIC_PREFETCH_MAX_PAGES", "10")
+
+    config = load_oneshot_env()
+
+    assert config.new_topic_target_per_run == 8
+    assert config.topic_prefetch_pages == 8
+    assert config.topic_prefetch_max_pages == 10
+
+
+def test_new_topic_target_rejects_reversed_prefetch_range(monkeypatch):
+    from litefupzl.oneshot.env_loader import load_oneshot_env
+
+    monkeypatch.setenv("LITEFUPZL_COOKIES_JSON", json.dumps(["_t=redacted"]))
+    monkeypatch.setenv("LITEFUPZL_TOPIC_PREFETCH_PAGES", "9")
+    monkeypatch.setenv("LITEFUPZL_TOPIC_PREFETCH_MAX_PAGES", "8")
+
+    with pytest.raises(ValueError, match="topic_prefetch_max_pages"):
+        load_oneshot_env()

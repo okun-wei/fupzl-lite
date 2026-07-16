@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
-import random
 import shutil
 import tempfile
 import time
@@ -28,10 +27,10 @@ from litefupzl.discourse.http_bypass import (
 )
 from litefupzl.discourse.models import Topic
 from litefupzl.exceptions import SessionFatalError
-from litefupzl.oneshot.github_sync import CookieRefreshError, refresh_slot_cookie_secret_from_context
+from litefupzl.oneshot.github_sync import refresh_slot_cookie_secret_from_context
 from litefupzl.oneshot.logging import PublicRecorder
 from litefupzl.oneshot.models import SlotConfig, SlotResult, SlotStatus, WarningCode, utc_now_iso
-from litefupzl.oneshot.timings import attach_topics_timing_observer
+from litefupzl.oneshot.timings import TopicTimingsTracker, attach_topics_timing_observer
 from litefupzl.utils import parse_cookies
 
 _BASE_URL = "https://linux.do"
@@ -49,6 +48,7 @@ _ONESHOT_TOPIC_POST_RATE_LIMIT_BACKOFF_MS = (55_000, 70_000)
 _ONESHOT_BROWSER_STARTUP_TIMEOUT_SECONDS = 120
 _ONESHOT_LOGIN_TIMEOUT_SECONDS = 420
 _ONESHOT_BROWSER_SESSION_PROBE_TIMEOUT_SECONDS = 12
+_ONESHOT_TOPIC_TIMINGS_CONFIRM_TIMEOUT_SECONDS = 5
 _ONESHOT_VOLATILE_COOKIE_NAMES = {"_forum_session", "cf_clearance"}
 _CHROMIUM_STEALTH_INIT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', {
@@ -82,12 +82,77 @@ class _CompositeController:
                 self._virtual_display.stop()
 
 
+def _new_topic_target(config) -> int:
+    return max(0, int(getattr(config, "new_topic_target_per_run", 0)))
+
+
+def _is_countable_new_topic(topic: Topic) -> bool:
+    """Only topics explicitly marked unseen are eligible for the hard target."""
+    return topic.unseen is True
+
+
+def _topic_time_budget_seconds(
+    *,
+    remaining_seconds: float,
+    remaining_new_topics: int,
+    is_countable_new_topic: bool,
+) -> float:
+    if remaining_seconds <= 0:
+        return 0.0
+    if is_countable_new_topic and remaining_new_topics > 0:
+        return max(1.0, remaining_seconds / remaining_new_topics)
+    return remaining_seconds
+
+
+def _merge_topic_metadata(existing: Topic, incoming: Topic) -> None:
+    if incoming.unseen is True:
+        existing.unseen = True
+    existing.unread_posts = max(existing.unread_posts, incoming.unread_posts)
+    for tag in incoming.tags:
+        if tag not in existing.tags:
+            existing.tags.append(tag)
+
+
+def _append_unique_topics(topic_list: list[Topic], candidates: list[Topic]) -> None:
+    by_id = {topic.id: topic for topic in topic_list}
+    for topic in candidates:
+        existing = by_id.get(topic.id)
+        if existing is not None:
+            _merge_topic_metadata(existing, topic)
+            continue
+        topic_list.append(topic)
+        by_id[topic.id] = topic
+
+
+def _record_new_topic_target_status(result: SlotResult, recorder: PublicRecorder, slot_alias: str) -> None:
+    result.new_topic_target_met = result.new_topics_confirmed >= result.new_topic_target
+    if not result.new_topic_target_met:
+        result.warning_codes.append(WarningCode.NEW_TOPIC_TARGET_UNMET.value)
+        recorder.emit(
+            slot_alias,
+            "new-topic-target",
+            "warning",
+            level="warning",
+            code=WarningCode.NEW_TOPIC_TARGET_UNMET.value,
+        )
+        return
+    recorder.emit(
+        slot_alias,
+        "new-topic-target",
+        "met",
+        code=f"COUNT_{result.new_topics_confirmed}",
+    )
+
+
 async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -> SlotResult:
     """Execute one cookie slot in oneshot mode."""
+    new_topic_target = _new_topic_target(config)
     result = SlotResult(
         slot_index=slot.slot_index,
         slot_alias=slot.slot_alias,
         started_at=utc_now_iso(),
+        new_topic_target=new_topic_target,
+        new_topic_target_met=new_topic_target == 0,
     )
     recorder.emit(slot.slot_alias, "slot", "started")
     slot_cookies = _normalize_cookie_dicts(slot.cookie)
@@ -108,7 +173,14 @@ async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -
             timeout=_ONESHOT_BROWSER_STARTUP_TIMEOUT_SECONDS,
         )
         recorder.emit(slot.slot_alias, "browser", "ready")
-        attach_topics_timing_observer(main_page, recorder, slot.slot_alias, config.browser_name)
+        timings_tracker = TopicTimingsTracker()
+        attach_topics_timing_observer(
+            main_page,
+            recorder,
+            slot.slot_alias,
+            config.browser_name,
+            tracker=timings_tracker,
+        )
         browser_user_agent = await _get_browser_user_agent(main_page)
         ua_summary = _summarize_user_agent(browser_user_agent)
         result.browser_user_agent_linux_like = ua_summary["linux_like"]
@@ -257,15 +329,36 @@ async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -
             topic_list = await _build_topic_queue(slot_cookies, config, user_agent=browser_user_agent)
         except Exception:
             topic_list = []
-            result.warning_codes.append(WarningCode.TOPIC_FETCH_FAILED.value)
-            recorder.emit(slot.slot_alias, "topic-list", "warning", level="warning", code=WarningCode.TOPIC_FETCH_FAILED.value)
 
         if not topic_list:
+            result.warning_codes.append(WarningCode.TOPIC_FETCH_FAILED.value)
+            if result.new_topic_target > 0:
+                result.warning_codes.append(WarningCode.NEW_TOPIC_POOL_EXHAUSTED.value)
+                recorder.emit(
+                    slot.slot_alias,
+                    "new-topic-pool",
+                    "warning",
+                    level="warning",
+                    code=WarningCode.NEW_TOPIC_POOL_EXHAUSTED.value,
+                )
+            _record_new_topic_target_status(result, recorder, slot.slot_alias)
             result.status = SlotStatus.WARNING
             recorder.emit(slot.slot_alias, "topic-list", "warning", level="warning", code=WarningCode.TOPIC_FETCH_FAILED.value)
             return _finish_result(result)
 
+        unseen_topic_count = sum(1 for topic in topic_list if _is_countable_new_topic(topic))
+        if unseen_topic_count < result.new_topic_target:
+            result.warning_codes.append(WarningCode.NEW_TOPIC_POOL_EXHAUSTED.value)
+            recorder.emit(
+                slot.slot_alias,
+                "new-topic-pool",
+                "warning",
+                level="warning",
+                code=WarningCode.NEW_TOPIC_POOL_EXHAUSTED.value,
+            )
+
         visited: set[int] = set()
+        counted_new_topic_ids: set[int] = set()
         topic_index = 0
         read_warning_seen = False
         last_read_failure_code: str | None = None
@@ -273,16 +366,22 @@ async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -
         while time.monotonic() < deadline:
             if topic_index >= len(topic_list):
                 try:
+                    remaining_target = max(
+                        0,
+                        result.new_topic_target - result.new_topics_confirmed,
+                    )
+                    initial_pages, max_pages = _topic_prefetch_page_range(config)
                     refill = await asyncio.to_thread(
                         get_latest_topics_pages_via_http,
                         slot_cookies,
                         _BASE_URL,
-                        pages=_latest_page_count_for_duration(slot.duration_minutes),
+                        pages=initial_pages if remaining_target else 1,
+                        max_pages=max_pages if remaining_target else 1,
+                        minimum_unseen_topics=remaining_target,
                         user_agent=browser_user_agent,
                     )
-                    for topic in refill:
-                        if topic.id not in {existing.id for existing in topic_list}:
-                            topic_list.append(topic)
+                    refill.sort(key=lambda topic: not _is_countable_new_topic(topic))
+                    _append_unique_topics(topic_list, refill)
                 except Exception:
                     result.warning_codes.append(WarningCode.TOPIC_FETCH_FAILED.value)
                     recorder.emit(slot.slot_alias, "topic-refill", "warning", level="warning", code=WarningCode.TOPIC_FETCH_FAILED.value)
@@ -298,27 +397,52 @@ async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -
                 continue
             visited.add(topic.id)
 
-            try:
-                await safe_goto(main_page, topic.url)
-                await random_delay(800, 1800)
-            except SessionFatalError:
-                result.cf_seen = True
-                result.warning_codes.append(WarningCode.CF_BLOCKED.value)
-                recorder.emit(slot.slot_alias, "navigate", "warning", level="warning", code=WarningCode.CF_BLOCKED.value)
-                continue
-            except Exception:
-                read_warning_seen = True
-                last_read_failure_code = "READ_FAILED_NAVIGATE_EXCEPTION"
-                continue
-
-            remaining = max(0, int(deadline - time.monotonic()))
+            remaining = max(0.0, deadline - time.monotonic())
             if remaining <= 0:
                 break
 
+            is_countable_new_topic = _is_countable_new_topic(topic)
+            remaining_new_topics = max(
+                0,
+                result.new_topic_target - result.new_topics_confirmed,
+            )
+            topic_budget_seconds = _topic_time_budget_seconds(
+                remaining_seconds=remaining,
+                remaining_new_topics=remaining_new_topics,
+                is_countable_new_topic=is_countable_new_topic,
+            )
+            topic_deadline = min(deadline, time.monotonic() + topic_budget_seconds)
+
+            timings_tracker.prepare(topic.id)
+            topic_stage = "navigate"
             try:
-                read_completed, read_failure_code = await _read_topic_to_bottom(
-                    main_page,
-                    remaining_seconds=remaining,
+                navigation_timeout = max(0.0, topic_deadline - time.monotonic())
+                if navigation_timeout <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(
+                    safe_goto(main_page, topic.url),
+                    timeout=navigation_timeout,
+                )
+
+                topic_stage = "dwell"
+                dwell_timeout = max(0.0, topic_deadline - time.monotonic())
+                if dwell_timeout <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(
+                    random_delay(800, 1800),
+                    timeout=dwell_timeout,
+                )
+
+                topic_stage = "read"
+                read_timeout = max(0.0, topic_deadline - time.monotonic())
+                if read_timeout <= 0:
+                    raise TimeoutError
+                read_completed, read_failure_code = await asyncio.wait_for(
+                    _read_topic_to_bottom(
+                        main_page,
+                        remaining_seconds=max(1, int(read_timeout)),
+                    ),
+                    timeout=read_timeout,
                 )
                 if read_completed:
                     result.read_ok = True
@@ -327,9 +451,50 @@ async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -
                 else:
                     read_warning_seen = True
                     last_read_failure_code = read_failure_code or WarningCode.READ_FAILED.value
+            except SessionFatalError:
+                result.cf_seen = True
+                result.warning_codes.append(WarningCode.CF_BLOCKED.value)
+                recorder.emit(slot.slot_alias, "navigate", "warning", level="warning", code=WarningCode.CF_BLOCKED.value)
+            except TimeoutError:
+                read_warning_seen = True
+                last_read_failure_code = "READ_FAILED_TOPIC_BUDGET_EXHAUSTED"
             except Exception:
                 read_warning_seen = True
-                last_read_failure_code = "READ_FAILED_SCROLL_EXCEPTION"
+                last_read_failure_code = (
+                    "READ_FAILED_NAVIGATE_EXCEPTION"
+                    if topic_stage == "navigate"
+                    else "READ_FAILED_SCROLL_EXCEPTION"
+                )
+            finally:
+                confirmation_timeout = min(
+                    _ONESHOT_TOPIC_TIMINGS_CONFIRM_TIMEOUT_SECONDS,
+                    max(0.0, topic_deadline - time.monotonic()),
+                )
+                timings_confirmed = await timings_tracker.wait_for_confirmation(
+                    topic.id,
+                    timeout_seconds=confirmation_timeout,
+                )
+                if (
+                    is_countable_new_topic
+                    and timings_confirmed
+                    and topic.id not in counted_new_topic_ids
+                ):
+                    counted_new_topic_ids.add(topic.id)
+                    result.new_topics_confirmed = len(counted_new_topic_ids)
+                    recorder.emit(
+                        slot.slot_alias,
+                        "new-topic",
+                        "confirmed",
+                        code=f"COUNT_{result.new_topics_confirmed}_OF_{result.new_topic_target}",
+                    )
+                elif is_countable_new_topic and not timings_confirmed:
+                    recorder.emit(
+                        slot.slot_alias,
+                        "new-topic",
+                        "unconfirmed",
+                        level="warning",
+                        code="TIMINGS_NOT_CONFIRMED",
+                    )
 
             if _should_run_mutual_like_pass(
                 mutual_like_done=mutual_like_done,
@@ -348,6 +513,8 @@ async def run_slot_session(slot: SlotConfig, config, recorder: PublicRecorder) -
                     actor_username=username,
                     user_agent=browser_user_agent,
                 )
+
+        _record_new_topic_target_status(result, recorder, slot.slot_alias)
 
         if read_warning_seen and not result.read_ok:
             result.warning_codes.append(WarningCode.READ_FAILED.value)
@@ -1435,18 +1602,32 @@ async def _extract_username(page) -> str | None:
 
 async def _build_topic_queue(slot_cookies: list[dict], config, *, user_agent: str | None = None) -> list[Topic]:
     """Build a read-only topic queue from latest unread/unseen topics."""
-    return await asyncio.to_thread(
+    initial_pages, max_pages = _topic_prefetch_page_range(config)
+    topics = await asyncio.to_thread(
         get_latest_topics_pages_via_http,
         slot_cookies,
         _BASE_URL,
-        pages=_latest_page_count_for_duration(config.duration_minutes),
+        pages=initial_pages,
+        max_pages=max_pages,
+        minimum_unseen_topics=_new_topic_target(config),
         user_agent=user_agent,
     )
+    topics.sort(key=lambda topic: not _is_countable_new_topic(topic))
+    return topics
 
 
 def _latest_page_count_for_duration(duration_minutes: int) -> int:
     """Map a slot duration to the number of latest.json pages to inspect."""
     return max(1, (int(duration_minutes) + 4) // 5)
+
+
+def _topic_prefetch_page_range(config) -> tuple[int, int]:
+    """Preserve duration-based depth while enforcing the 7-to-10 page defaults."""
+    minimum_pages = max(1, int(getattr(config, "topic_prefetch_pages", 7)))
+    maximum_pages = max(minimum_pages, int(getattr(config, "topic_prefetch_max_pages", 10)))
+    duration_pages = _latest_page_count_for_duration(int(getattr(config, "duration_minutes", 40)))
+    initial_pages = min(maximum_pages, max(minimum_pages, duration_pages))
+    return initial_pages, maximum_pages
 
 
 def _should_run_mutual_like_pass(

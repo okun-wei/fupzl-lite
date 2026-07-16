@@ -21,6 +21,8 @@ class WarningCode(StrEnum):
     READ_FAILED = "READ_FAILED"
     USER_INFO_UNAVAILABLE = "USER_INFO_UNAVAILABLE"
     TOPIC_FETCH_FAILED = "TOPIC_FETCH_FAILED"
+    NEW_TOPIC_POOL_EXHAUSTED = "NEW_TOPIC_POOL_EXHAUSTED"
+    NEW_TOPIC_TARGET_UNMET = "NEW_TOPIC_TARGET_UNMET"
     COOKIE_REFRESH_FAILED = "COOKIE_REFRESH_FAILED"
     LOGIN_DEVICE_PROOF_INCONCLUSIVE = "LOGIN_DEVICE_PROOF_INCONCLUSIVE"
     MUTUAL_LIKE_WARNING = "MUTUAL_LIKE_WARNING"
@@ -70,6 +72,9 @@ class SlotResult:
     mutual_like_enabled: bool = False
     mutual_like_target_count: int = 0
     mutual_like_liked_count: int = 0
+    new_topic_target: int = 0
+    new_topics_confirmed: int = 0
+    new_topic_target_met: bool = False
     cookie_refresh_ok: bool = False
     cf_seen: bool = False
     warning_codes: list[str] = field(default_factory=list)

@@ -1,15 +1,7 @@
 from litefupzl.utils import normalize_cookie_string, normalize_cookie_value, parse_cookies
 
-_RAW_VALUE = (
-    "BoK2pFajVrlkaMuZsMrI9lbmLs3WzxsOHfE1GYI7vBNC/naq5PNakDrVI/er8e6cNgGnP4xJWdS4ALRk9Mt7PjbTEsYXo8no3THY5E5698xAcHb3Twr3du"
-    "+URX//I/usTTa6Ng7ULAwcZL/8PzlP8uI7BAJOR91W7vjPKQ5KeorsGhah0wEG4LP6CTmCrYnxWFppLepM0i6Qk5fzXZFVLjsK8eJh83dxZIBcSwfAOpp4dUI"
-    "/DsC1djKkYaght+6o/f0b7YW72WjO77xfTDvTkSMvbh44kDTw--Pa/5woWrm9tYKGJl--ESaokz/AhD503wHvBrmZww=="
-)
-_ENCODED_VALUE = (
-    "BoK2pFajVrlkaMuZsMrI9lbmLs3WzxsOHfE1GYI7vBNC%2Fnaq5PNakDrVI%2Fer8e6cNgGnP4xJWdS4ALRk9Mt7PjbTEsYXo8no3THY5E5698xAcHb3Twr3du"
-    "%2BURX%2F%2FI%2FusTTa6Ng7ULAwcZL%2F8PzlP8uI7BAJOR91W7vjPKQ5KeorsGhah0wEG4LP6CTmCrYnxWFppLepM0i6Qk5fzXZFVLjsK8eJh83dxZIBcSwfAOpp4dUI"
-    "%2FDsC1djKkYaght%2B6o%2Ff0b7YW72WjO77xfTDvTkSMvbh44kDTw--Pa%2F5woWrm9tYKGJl--ESaokz%2FAhD503wHvBrmZww%3D%3D"
-)
+_RAW_VALUE = "synthetic/value+plus=="
+_ENCODED_VALUE = "synthetic%2Fvalue%2Bplus%3D%3D"
 
 
 def test_normalize_cookie_value_accepts_raw_and_encoded_forms():

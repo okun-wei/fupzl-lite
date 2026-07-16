@@ -88,7 +88,7 @@ def _parse_topic(raw: dict, base_url: str) -> Topic:
         slug=raw.get("slug", "") or "topic",
         url=f"{base_url}/t/{raw.get('slug', '') or 'topic'}/{raw['id']}",
         unread_posts=raw.get("unread_posts", 0) or 0,
-        unseen=raw.get("unseen", True),
+        unseen=raw.get("unseen") is True,
         closed=raw.get("closed", False),
         archived=raw.get("archived", False),
         tags=raw_tags,
@@ -404,21 +404,45 @@ def get_latest_topics_pages_via_http(
     base_url: str,
     *,
     pages: int,
+    max_pages: int | None = None,
+    minimum_unseen_topics: int = 0,
     user_agent: str | None = None,
 ) -> list[Topic]:
-    """Fetch unread/unseen topics from the first N latest.json pages."""
-    page_count = max(1, int(pages))
+    """Fetch, deduplicate, and optionally extend latest-topic pages."""
+    initial_pages = max(1, int(pages))
+    page_limit = max(initial_pages, int(max_pages or initial_pages))
     topics: list[Topic] = []
-    seen_ids: set[int] = set()
+    topics_by_id: dict[int, Topic] = {}
 
-    for page in range(page_count):
+    for page in range(page_limit):
         url = f"{base_url}/latest.json" if page == 0 else f"{base_url}/latest.json?page={page}"
-        data = fetch_json(cookies, url, referer=base_url, user_agent=user_agent)
+        try:
+            data = fetch_json(cookies, url, referer=base_url, user_agent=user_agent)
+        except Exception:
+            if page == 0:
+                raise
+            break
+
+        raw_topics = data.get("topic_list", {}).get("topics", [])
+        if not raw_topics:
+            break
         for topic in _extract_topics(data, base_url, unread_only=True):
-            if topic.id in seen_ids:
+            existing = topics_by_id.get(topic.id)
+            if existing is not None:
+                if topic.unseen is True:
+                    existing.unseen = True
+                existing.unread_posts = max(existing.unread_posts, topic.unread_posts)
+                for tag in topic.tags:
+                    if tag not in existing.tags:
+                        existing.tags.append(tag)
                 continue
-            seen_ids.add(topic.id)
+            topics_by_id[topic.id] = topic
             topics.append(topic)
+
+        fetched_pages = page + 1
+        unseen_count = sum(1 for topic in topics if topic.unseen is True)
+        if fetched_pages >= initial_pages and unseen_count >= minimum_unseen_topics:
+            break
 
     return topics
 

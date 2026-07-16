@@ -12,6 +12,7 @@ write action is the bounded mutual-like pass described below.
 - Browser challenge prewarm and challenge handling before authenticated work.
 - Cookie login proof with authenticated browser-session checks.
 - Read-only topic browsing with human-like scrolling and retry behavior.
+- Per-run never-read topic quota derived from a 30-day target.
 - Optional mutual-like pass for configured usernames.
 - Per-browser `/topics/timings` status diagnostics in redacted logs.
 - Optional cookie refresh with validation before writing a GitHub secret.
@@ -31,6 +32,11 @@ Create a local `.env.local` when running outside GitHub Actions:
 ```env
 LITEFUPZL_COOKIES_JSON=["_t=<account1_redacted>"]
 LITEFUPZL_DURATION_MINUTES=5
+# Optional quota overrides; these are the built-in defaults.
+LITEFUPZL_MONTHLY_TOPIC_TARGET=500
+LITEFUPZL_SCHEDULE_RUNS_PER_DAY=2
+LITEFUPZL_TOPIC_PREFETCH_PAGES=7
+LITEFUPZL_TOPIC_PREFETCH_MAX_PAGES=10
 LITEFUPZL_HEADLESS=true
 LITEFUPZL_BROWSER=chromium
 LITEFUPZL_PROXY_SERVER=
@@ -82,7 +88,9 @@ commands are quick diagnostics and currently use only the first cookie slot.
 
 ## GitHub Actions setup
 
-Configure GitHub Actions configuration as repository secrets under:
+Configure sensitive values as repository Secrets. Non-sensitive settings may
+use repository Variables; Variables take priority, with Secrets retained as a
+backward-compatible fallback.
 
 `Settings` → `Secrets and variables` → `Actions`
 
@@ -120,6 +128,8 @@ Recommended permissions:
 
 Do not place this token in code, commits, logs, or artifacts.
 
+### Variables or Secrets
+
 #### `LITEFUPZL_MUTUAL_LIKE_USERS_JSON`
 
 Optional. A JSON array of usernames for the bounded mutual-like pass.
@@ -147,10 +157,10 @@ target usernames allow at most eight likes per target in one slot. If more than
 25 usernames are configured, the per-target quota is zero and the pass is
 skipped for that slot.
 
-Usernames are treated as sensitive operational data, so this value is read only
-from repository secrets in GitHub Actions.
+This value may be stored in Variables or Secrets. Prefer Secrets if the target
+usernames are sensitive operational data.
 
-### Additional repository secrets
+### Additional Variables or Secrets
 
 #### `LITEFUPZL_SITE`
 
@@ -165,6 +175,42 @@ Slots run sequentially, not in parallel. For example, if this is `40` and
 `LITEFUPZL_COOKIES_JSON` contains two accounts, the main work can run
 for about `40 + 40 = 80` minutes, plus setup, login verification, probes, and
 cleanup overhead. Keep the workflow timeout in mind when adding more accounts.
+
+#### `LITEFUPZL_MONTHLY_TOPIC_TARGET`
+
+Minimum number of never-read topics targeted in a fixed 30-day period. Default:
+`500`.
+
+#### `LITEFUPZL_SCHEDULE_RUNS_PER_DAY`
+
+Number of scheduled runs per day used for quota calculation. Default: `2`,
+matching the two cron entries in `oneshot.yml`.
+
+With the defaults, every cookie slot targets:
+
+```text
+ceil(500 / (30 * 2)) = 9
+```
+
+Only a topic explicitly returned as `unseen=true` is eligible. It is counted
+only after the browser observes an HTTP 200 response from `/topics/timings`
+whose submitted `topic_id` matches that topic. A previously read topic with new
+replies remains available to the normal reading flow but does not count toward
+this target.
+
+#### `LITEFUPZL_TOPIC_PREFETCH_PAGES`
+
+Minimum latest-topic pages fetched before reading. Default: `7`.
+
+#### `LITEFUPZL_TOPIC_PREFETCH_MAX_PAGES`
+
+Maximum latest-topic pages fetched when the unseen pool is still below the
+per-run target. Default: `10`.
+
+All four quota variables are optional. When the target is still incomplete,
+the remaining slot time is dynamically divided by the number of missing new
+topics. Navigation, dwell time, and normal scrolling all use that budget. Once
+the target is met, the remaining slot follows the existing reading behavior.
 
 #### `LITEFUPZL_HEADLESS`
 
@@ -219,7 +265,7 @@ Number of recent workflow runs to keep during cleanup. Default: `15`.
 Cookie refresh switch for local runs and scheduled GitHub Actions runs. Default:
 `true`.
 
-For scheduled GitHub Actions runs, set repository secret
+For scheduled GitHub Actions runs, set the repository Variable or Secret
 `LITEFUPZL_COOKIE_REFRESH_ENABLED=false` only if you want to disable automatic
 validated cookie write-back. Manual runs use the `cookie_refresh_enabled`
 workflow input for that single run.
@@ -299,12 +345,17 @@ For each observed `/topics/timings` request, diagnostics include:
 - URL category;
 - HTTP status code.
 
+`oneshot_summary.json` also reports `new_topic_target`,
+`new_topics_confirmed`, and `new_topic_target_met` for every slot. An exhausted
+pool or unmet target is recorded as a warning rather than being reported as a
+successful quota.
+
 ## Cookie refresh behavior
 
 Cookie refresh is enabled by default.
 
 Manual runs use the `cookie_refresh_enabled` workflow input. Scheduled runs use
-repository secret `LITEFUPZL_COOKIE_REFRESH_ENABLED`.
+repository Variable or Secret `LITEFUPZL_COOKIE_REFRESH_ENABLED`.
 
 When enabled, the runner:
 
