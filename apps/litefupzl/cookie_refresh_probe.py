@@ -23,6 +23,7 @@ if str(CORE_SRC) not in sys.path:
     sys.path.insert(0, str(CORE_SRC))
 
 from litefupzl.oneshot.github_sync import refresh_slot_cookie_secret_from_context
+from litefupzl.oneshot.redaction import install_sensitive_output_guard
 
 _BASE_URL = "https://linux.do"
 _PROBE_SECRET_NAME = "LITEFUPZL_COOKIE_REFRESH_PROBE"
@@ -74,6 +75,7 @@ async def _always_valid(_cookie_string: str) -> bool:
 
 
 async def run_cookie_refresh_probe() -> int:
+    install_sensitive_output_guard()
     output_dir = Path(os.environ.get("LITEFUPZL_OUTPUT_DIR") or os.environ.get("FUCKPZL_ONESHOT_OUTPUT_DIR") or "output/litefupzl")
     output_dir.mkdir(parents=True, exist_ok=True)
 

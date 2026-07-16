@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 from nacl import encoding, public
 
-from litefupzl.utils import parse_cookies
+from litefupzl.utils import parse_cookies, normalize_cookie_value
 
 
 class CookieRefreshError(RuntimeError):
@@ -68,7 +68,7 @@ def build_refresh_cookie_string(browser_cookies: list[dict], original_cookie_str
         value = lookup.get(name, original_cookie.get("value"))
         if value is None:
             continue
-        parts.append(f"{name}={value}")
+        parts.append(f"{name}={normalize_cookie_value(str(value))}")
     return "; ".join(parts) if parts else None
 
 

@@ -16,3 +16,5 @@ warp-svc.log
 local-proxy.log
 .env
 .env.local
+
+.*

@@ -8,6 +8,8 @@ from pathlib import Path
 
 from litefupzl.config.defaults import SESSION_DURATION_MINUTES
 from litefupzl.oneshot.env_schema import OneShotEnvConfig
+from litefupzl.oneshot.redaction import install_sensitive_output_guard
+from litefupzl.utils import normalize_cookie_string
 
 _ENV_FILE_CANDIDATES = (".env.local", ".env")
 DEFAULT_ONESHOT_DURATION_MINUTES = SESSION_DURATION_MINUTES
@@ -106,7 +108,10 @@ def load_oneshot_env() -> OneShotEnvConfig:
 
     config = {
         "site": os.environ.get("LITEFUPZL_SITE") or os.environ.get("FUCKPZL_ONESHOT_SITE", "linux.do"),
-        "cookies": _load_json_array("LITEFUPZL_COOKIES_JSON", alias_keys=("FUCKPZL_ONESHOT_COOKIES_JSON",)),
+        "cookies": [
+            normalize_cookie_string(cookie)
+            for cookie in _load_json_array("LITEFUPZL_COOKIES_JSON", alias_keys=("FUCKPZL_ONESHOT_COOKIES_JSON",))
+        ],
         "duration_minutes": _load_int(
             "LITEFUPZL_DURATION_MINUTES",
             DEFAULT_ONESHOT_DURATION_MINUTES,
@@ -120,4 +125,5 @@ def load_oneshot_env() -> OneShotEnvConfig:
         "cookie_refresh_enabled": _cookie_refresh_enabled_from_env(),
         "mutual_like_users": _load_optional_json_array("LITEFUPZL_MUTUAL_LIKE_USERS_JSON"),
     }
+    install_sensitive_output_guard()
     return OneShotEnvConfig.model_validate(config)
